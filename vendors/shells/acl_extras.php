@@ -108,9 +108,15 @@ class AclExtrasShell extends Shell {
 		if ($appIndex !== false) {
 			unset($Controllers[$appIndex]);
 		}
+		$Plugins = $this->getPluginControllerNames();
+		$Controllers = array_merge($Controllers, $Plugins);
 		// look at each controller in app/controllers
 		foreach ($Controllers as $ctrlName) {
-			App::import('Controller', $ctrlName);
+			App::import('Controller', str_replace('/','.',$ctrlName));
+			// Do all Plugins First
+			if ($this->_isPlugin($ctrlName)){
+			    $pluginNode = $this->_checkPluginNode($this->rootNode.'/'.$this->_getPluginName($ctrlName),$this->_getPluginName($ctrlName),$root['Aco']['id']);
+            }
 			// find / make controller node
 			$controllerNode = $this->_checkNode($this->rootNode . '/' . $ctrlName, $ctrlName, $root['Aco']['id']);
 			$this->_checkMethods($ctrlName, $controllerNode, $this->_clean);
@@ -118,13 +124,31 @@ class AclExtrasShell extends Shell {
 		if ($this->_clean) {
 			$this->Aco->id = $root['Aco']['id'];
 			$controllerNodes = $this->Aco->children(null, true);
-			$ctrlFlip = array_flip($Controllers);
+			$ctrlFlip = array();
+			foreach ($Controllers as $Controller) {
+			    if($this->_isPlugin($Controller)) {
+			        $ctrlFlip[$this->_getPluginName($Controller)][$this->_getPluginControllerName($Controller)] = 'plugin';
+			    } else {
+			        $ctrlFlip[$Controller] = 'controller';
+			    }
+			}
 			foreach ($controllerNodes as $ctrlNode) {
 				if (!isset($ctrlFlip[$ctrlNode['Aco']['alias']])) {
 					$this->Aco->id = $ctrlNode['Aco']['id'];
 					if ($this->Aco->delete()) {
 						$this->out(sprintf(__('Deleted %s and all children', true), $this->rootNode . '/' . $ctrlNode['Aco']['alias']));
 					}
+				} else if (is_array($ctrlFlip[$ctrlNode['Aco']['alias']])) {
+				    $this->Aco->id = $ctrlNode['Aco']['id'];
+				    $pluginNodes = $this->Aco->children(null, true);
+				    foreach ($pluginNodes as $pluginNode) {
+				        if (!isset($ctrlFlip[$ctrlNode['Aco']['alias']][$pluginNode['Aco']['alias']])) {
+				            $this->Aco->id = $pluginNode['Aco']['id'];
+				            if ($this->Aco->delete()) {
+				                $this->out(sprintf(__('Deleted %s and all children', true), $this->rootNode . '/' . $ctrlNode['Aco']['alias']. '/' . $pluginNode['Aco']['alias']));
+				            }
+				        }
+				    }
 				}
 			}
 		}
@@ -139,6 +163,28 @@ class AclExtrasShell extends Shell {
  **/
 	function getControllerList() {
 		return Configure::listObjects('controller', null, false);
+	}
+
+/**
+ * Get a list of plugins controllers
+ *
+ * @return array
+ **/
+
+	function getPluginControllerNames() {
+	    $result = array();
+	    $plugins = Configure::listObjects('plugin',null,false);
+		foreach ($plugins as $plugin) {
+		    $path = APP . 'plugins'. DS . $plugin . DS . 'controllers';
+			$controllers = Configure::listObjects('controller',$path,false);
+			foreach ($controllers as $controller) {
+				if ($controller == $plugin.'App') {
+					continue;
+				}
+				$result[] = $plugin . '/' . $controller;
+			}
+		}
+		return $result;
 	}
 
 /**
@@ -162,10 +208,42 @@ class AclExtrasShell extends Shell {
 	function _checkNode($path, $alias, $parentId = null) {
 		$node = $this->Aco->node($path);
 		if (!$node) {
+		    if ($this->_isPlugin($path)) {
+                $pluginNode = $this->Aco->node($this->rootNode.'/' . $this->_getPluginName($alias));
+                $this->Aco->create(array('parent_id' => $pluginNode['0']['Aco']['id'], 'model' => null, 'alias' => $this->_getPluginControllerName($alias)));
+                $node = $this->Aco->save();
+                $node['Aco']['id'] = $this->Aco->id;
+                $this->out(sprintf(__('Created Aco node for %s ', true),$pluginNode.$this->_getPluginControllerName($alias) ));
+		    } else {
+    			$this->Aco->create(array('parent_id' => $parentId, 'model' => null, 'alias' => $alias));
+    			$node = $this->Aco->save();
+    			$node['Aco']['id'] = $this->Aco->id;
+    			$this->out(sprintf(__('Created Aco node for %s', true), $path));
+		    }
+		} else {
+			$node = $node[0];
+		}
+		return $node;
+	}
+
+	function _checkPluginNode($path, $alias, $parentId = null) {
+		$pluginNode = $this->Aco->node($path);
+		if (!$pluginNode) {
+			$this->Aco->create(array('parent_id' => $parentId, 'model' => null, 'alias' => $alias));
+			$pluginNode = $this->Aco->save();
+			$pluginNode['Aco']['id'] = $this->Aco->id;
+			$this->out(sprintf(__('Created Aco node for %s', true), $path));
+		}
+		return $pluginNode;
+	}
+
+	function _checkMethodNode($path, $alias, $parentId = null) {
+		$node = $this->Aco->node($path);
+		if (!$node) {
 			$this->Aco->create(array('parent_id' => $parentId, 'model' => null, 'alias' => $alias));
 			$node = $this->Aco->save();
 			$node['Aco']['id'] = $this->Aco->id;
-			$this->out(sprintf(__('Created Aco node: %s', true), $path));
+			$this->out(sprintf(__('Created Aco node for %s', true), $path));
 		} else {
 			$node = $node[0];
 		}
@@ -180,7 +258,8 @@ class AclExtrasShell extends Shell {
  * @param bool $cleanup
  * @return void
  */
-	function _checkMethods($controller, $node, $cleanup = false) {
+	function _checkMethods($ctrlName, $node, $cleanup = false) {
+	    $controller = ($this->_isPlugin($ctrlName)) ? $this->_getPluginControllerName($ctrlName) : $ctrlName;
 		$className = $controller . 'Controller';
 		$baseMethods = get_class_methods('Controller');
 		$actions = get_class_methods($className);
@@ -189,7 +268,7 @@ class AclExtrasShell extends Shell {
 			if (strpos($action, '_', 0) === 0) {
 				continue;
 			}
-			$this->_checkNode($this->rootNode . '/' . $controller . '/' . $action, $action, $node['Aco']['id']);
+			$this->_checkMethodNode($this->rootNode . '/' . $ctrlName . '/' . $action, $action, $node['Aco']['id']);
 		}
 		if ($cleanup) {
 			$actionNodes = $this->Aco->children($node['Aco']['id']);
@@ -198,7 +277,7 @@ class AclExtrasShell extends Shell {
 				if (!isset($methodFlip[$action['Aco']['alias']])) {
 					$this->Aco->id = $action['Aco']['id'];
 					if ($this->Aco->delete()) {
-						$path = $this->rootNode . '/' . $controller . '/' . $action['Aco']['alias'];
+						$path = $this->rootNode . '/' . $ctrlName . '/' . $action['Aco']['alias'];
 						$this->out(sprintf(__('Deleted Aco node %s', true), $path));
 					}
 				}
@@ -288,5 +367,32 @@ class AclExtrasShell extends Shell {
 			$this->out(__('Tree recovery failed.', true));
 		}
 	}
+
+    function _isPlugin($ctrlName = null) {
+        $arr = String::tokenize($ctrlName, '/');
+        if (count($arr) > 1) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    function _getPluginName($ctrlName = null) {
+        $arr = String::tokenize($ctrlName, '/');
+        if (count($arr) == 2) {
+            return $arr[0];
+        } else {
+            return false;
+        }
+    }
+
+    function _getPluginControllerName($ctrlName = null) {
+        $arr = String::tokenize($ctrlName, '/');
+        if (count($arr) == 2) {
+            return $arr[1];
+        } else {
+            return false;
+        }
+    }
 }
 ?>
