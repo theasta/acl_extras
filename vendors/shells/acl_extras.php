@@ -110,15 +110,17 @@ class AclExtrasShell extends Shell {
 		}
 		$Plugins = $this->getPluginControllerNames();
 		$Controllers = array_merge($Controllers, $Plugins);
-		// look at each controller in app/controllers
+
 		foreach ($Controllers as $ctrlName) {
 			App::import('Controller', str_replace('/','.',$ctrlName));
-			// Do all Plugins First
-			if ($this->_isPlugin($ctrlName)){
-			    $pluginNode = $this->_checkPluginNode($this->rootNode.'/'.$this->_getPluginName($ctrlName),$this->_getPluginName($ctrlName),$root['Aco']['id']);
+			// Add plugins node first
+			if ( ($pluginInfos = $this->_isPlugin($ctrlName)) !== false){
+				$pluginName = $pluginInfos[0];
+			    $pluginNode = $this->_checkPluginNode($this->rootNode.'/'.$pluginName,$pluginName,$root['Aco']['id']);
             }
-			// find / make controller node
+			// Add controllers node
 			$controllerNode = $this->_checkNode($this->rootNode . '/' . $ctrlName, $ctrlName, $root['Aco']['id']);
+			// Add methods node
 			$this->_checkMethods($ctrlName, $controllerNode, $this->_clean);
 		}
 		if ($this->_clean) {
@@ -126,8 +128,10 @@ class AclExtrasShell extends Shell {
 			$controllerNodes = $this->Aco->children(null, true);
 			$ctrlFlip = array();
 			foreach ($Controllers as $Controller) {
-			    if($this->_isPlugin($Controller)) {
-			        $ctrlFlip[$this->_getPluginName($Controller)][$this->_getPluginControllerName($Controller)] = 'plugin';
+				if ( ($pluginInfos = $this->_isPlugin($Controller)) !== false){
+					$pluginName = $pluginInfos[0];
+					$pluginControllerName = $pluginInfos[1];
+			        $ctrlFlip[$pluginName][$pluginControllerName] = 'plugin';
 			    } else {
 			        $ctrlFlip[$Controller] = 'controller';
 			    }
@@ -157,12 +161,12 @@ class AclExtrasShell extends Shell {
 	}
 
 /**
- * Get a list of controllers in the app. Wraps Configure::listObjects() for testing
+ * Get a list of controllers in the app. Wraps App::objects() for testing
  *
  * @return array
  **/
 	function getControllerList() {
-		return Configure::listObjects('controller', null, false);
+		return App::objects('controller', null, false);
 	}
 
 /**
@@ -173,10 +177,10 @@ class AclExtrasShell extends Shell {
 
 	function getPluginControllerNames() {
 	    $result = array();
-	    $plugins = Configure::listObjects('plugin',null,false);
+	    $plugins = App::objects('plugin',null,false);
 		foreach ($plugins as $plugin) {
-		    $path = APP . 'plugins'. DS . $plugin . DS . 'controllers';
-			$controllers = Configure::listObjects('controller',$path,false);
+		    $path = App::pluginPath($plugin) . 'controllers';
+			$controllers = App::objects('controller',$path,false);
 			foreach ($controllers as $controller) {
 				if ($controller == $plugin.'App') {
 					continue;
@@ -208,17 +212,19 @@ class AclExtrasShell extends Shell {
 	function _checkNode($path, $alias, $parentId = null) {
 		$node = $this->Aco->node($path);
 		if (!$node) {
-		    if ($this->_isPlugin($path)) {
-                $pluginNode = $this->Aco->node($this->rootNode.'/' . $this->_getPluginName($alias));
-                $this->Aco->create(array('parent_id' => $pluginNode['0']['Aco']['id'], 'model' => null, 'alias' => $this->_getPluginControllerName($alias)));
+			if ( ($pluginInfos = $this->_isPlugin($path)) !== false){
+				$pluginName = $pluginInfos[0];
+				$pluginControllerName = $pluginInfos[1];
+                $pluginNode = $this->Aco->node($this->rootNode.'/' . $pluginName);
+                $this->Aco->create(array('parent_id' => $pluginNode['0']['Aco']['id'], 'model' => null, 'alias' => $pluginControllerName));
                 $node = $this->Aco->save();
                 $node['Aco']['id'] = $this->Aco->id;
-                $this->out(sprintf(__('Created Aco node for %s ', true),$pluginNode.$this->_getPluginControllerName($alias) ));
+                $this->out(sprintf(__('Created Aco node for Plugin Controller %s ', true),$pluginName . '/'. $pluginControllerName ));
 		    } else {
     			$this->Aco->create(array('parent_id' => $parentId, 'model' => null, 'alias' => $alias));
     			$node = $this->Aco->save();
     			$node['Aco']['id'] = $this->Aco->id;
-    			$this->out(sprintf(__('Created Aco node for %s', true), $path));
+    			$this->out(sprintf(__('Created Aco node for Controller %s', true), $path));
 		    }
 		} else {
 			$node = $node[0];
@@ -232,7 +238,7 @@ class AclExtrasShell extends Shell {
 			$this->Aco->create(array('parent_id' => $parentId, 'model' => null, 'alias' => $alias));
 			$pluginNode = $this->Aco->save();
 			$pluginNode['Aco']['id'] = $this->Aco->id;
-			$this->out(sprintf(__('Created Aco node for %s', true), $path));
+			$this->out(sprintf(__('Created Aco node for Plugin %s', true), $path));
 		}
 		return $pluginNode;
 	}
@@ -243,7 +249,7 @@ class AclExtrasShell extends Shell {
 			$this->Aco->create(array('parent_id' => $parentId, 'model' => null, 'alias' => $alias));
 			$node = $this->Aco->save();
 			$node['Aco']['id'] = $this->Aco->id;
-			$this->out(sprintf(__('Created Aco node for %s', true), $path));
+			$this->out(sprintf(__('Created Aco node for Method %s', true), $path));
 		} else {
 			$node = $node[0];
 		}
@@ -259,7 +265,7 @@ class AclExtrasShell extends Shell {
  * @return void
  */
 	function _checkMethods($ctrlName, $node, $cleanup = false) {
-	    $controller = ($this->_isPlugin($ctrlName)) ? $this->_getPluginControllerName($ctrlName) : $ctrlName;
+	    $controller = (($pluginInfos = $this->_isPlugin($ctrlName)) !== false) ? $pluginInfos[1] : $ctrlName;
 		$className = $controller . 'Controller';
 		$baseMethods = get_class_methods('Controller');
 		$actions = get_class_methods($className);
@@ -369,27 +375,12 @@ class AclExtrasShell extends Shell {
 	}
 
     function _isPlugin($ctrlName = null) {
-        $arr = String::tokenize($ctrlName, '/');
-        if (count($arr) > 1) {
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    function _getPluginName($ctrlName = null) {
+		if (strpos($ctrlName, $this->rootNode.'/') === 0) {
+			$ctrlName = substr($ctrlName,strlen($this->rootNode.'/'));
+		}
         $arr = String::tokenize($ctrlName, '/');
         if (count($arr) == 2) {
-            return $arr[0];
-        } else {
-            return false;
-        }
-    }
-
-    function _getPluginControllerName($ctrlName = null) {
-        $arr = String::tokenize($ctrlName, '/');
-        if (count($arr) == 2) {
-            return $arr[1];
+            return $arr;
         } else {
             return false;
         }
