@@ -18,12 +18,15 @@
  * @license http://www.opensource.org/licenses/mit-license.php The MIT License
  */
 
-App::import('Core', 'Shell');
 App::import('Model', 'DbAcl');
 App::import('Core', 'Controller');
 
 if (!defined('DISABLE_AUTO_DISPATCH')) {
 	define('DISABLE_AUTO_DISPATCH', true);
+}
+
+if (!class_exists('Shell')) {
+	require CONSOLE_LIBS . 'shell.php';
 }
 
 if (!class_exists('ShellDispatcher')) {
@@ -33,12 +36,10 @@ if (!class_exists('ShellDispatcher')) {
 	ob_end_clean();
 }
 
-$pluginPaths = Configure::read('pluginPaths');
-foreach ($pluginPaths as $path) {
-	$file = $path . 'acl_extras' . DS . 'vendors' . DS . 'shells' . DS . 'acl_extras.php';
-	if (file_exists($file)) {
-		require($file);
-	}
+
+$file = App::pluginPath('acl_extras'). 'vendors' . DS . 'shells' . DS . 'acl_extras.php';
+if (file_exists($file)) {
+	require($file);
 }
 
 if (!class_exists('AclExtrasShell')) {
@@ -89,7 +90,7 @@ class AclExtrasShellTestCase extends CakeTestCase {
 		$this->Dispatcher =& new AclExtrasMockShellDispatcher();
 		$this->Task =& new MockAclExtrasShell($this->Dispatcher);
 		$this->Task->Dispatch =& $this->Dispatcher;
-		$this->Task->Dispatch->shellPaths = Configure::read('shellPaths');
+		$this->Task->Dispatch->shellPaths = App::path('shells');
 	}
 
 /**
@@ -155,6 +156,7 @@ class AclExtrasShellTestCase extends CakeTestCase {
 	function _cleanAndSetup() {
 		$tableName = $this->db->fullTableName('acos');
 		$this->db->execute('TRUNCATE ' . $tableName);
+		//$this->db->execute('DELETE FROM ' . $tableName);
 		$this->Task->setReturnValue('getControllerList', array('Comments', 'Posts', 'BigLongNames'));
 		$this->Task->startup();
 	}
@@ -168,7 +170,6 @@ class AclExtrasShellTestCase extends CakeTestCase {
 		$this->Task->aco_update();
 
 		$Aco = $this->Task->Acl->Aco;
-
 		$result = $Aco->node('controllers/Comments');
 		$this->assertEqual($result[0]['Aco']['alias'], 'Comments');
 
@@ -235,8 +236,8 @@ class AclExtrasShellTestCase extends CakeTestCase {
 		$children = $Aco->children($result[0]['Aco']['id']);
 		$this->assertEqual(count($children), 3);
 
-		$Aco->del($children[0]['Aco']['id']);
-		$Aco->del($children[1]['Aco']['id']);
+		$Aco->delete($children[0]['Aco']['id']);
+		$Aco->delete($children[1]['Aco']['id']);
 		$this->Task->aco_update();
 
 		$children = $Aco->children($result[0]['Aco']['id']);
@@ -256,7 +257,7 @@ class AclExtrasShellTestCase extends CakeTestCase {
 		$Aco->cacheQueries = false;
 
 		$result = $Aco->node('controllers/Comments');
-		$Aco->del($result[0]['Aco']['id']);
+		$Aco->delete($result[0]['Aco']['id']);
 
 		$this->Task->aco_update();
 		$newResult = $Aco->node('controllers/Comments');
